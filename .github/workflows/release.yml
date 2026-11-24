@@ -33,11 +33,17 @@ jobs:
           if (-not (Test-Path $link)) { throw "no desktop icon" }
           $exe = (New-Object -ComObject WScript.Shell).CreateShortcut($link).TargetPath
           $p = Start-Process $exe -PassThru
-          Start-Sleep 8
+          Add-Type -Namespace W -Name U -MemberDefinition '
+            public delegate bool Cb(IntPtr h, IntPtr l);
+            [DllImport("user32.dll")] public static extern bool EnumWindows(Cb c, IntPtr l);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
+            [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);
+            public static string Titles(uint pid) { var r = ""; EnumWindows((h, l) => { uint q; GetWindowThreadProcessId(h, out q);
+              if (q == pid) { var b = new System.Text.StringBuilder(200); GetWindowText(h, b, 200); r += "[" + b + "]"; } return true; }, IntPtr.Zero); return r; }'
+          for ($i = 0; $i -lt 40; $i++) { Start-Sleep 1; $t = [W.U]::Titles($p.Id); if ($t -like "*UCH level maker*") { break } }
           if ($p.HasExited) { throw "the app closed with code $($p.ExitCode)" }
-          $p.Refresh()
-          if ($p.MainWindowTitle -notlike "*UCH level maker*") { throw "wrong window: $($p.MainWindowTitle)" }
-          "installed at $exe and running"
+          if ($t -notlike "*UCH level maker*") { throw "no editor window after ${i} s, windows: $t" }
+          "installed at $exe, window after ${i} s: $t"
           $p.Kill()
       - shell: pwsh
         env:
