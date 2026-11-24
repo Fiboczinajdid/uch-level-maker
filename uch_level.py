@@ -1,33 +1,32 @@
-"""Logika edytora: klocki z gry, łączenie kratek w jak najmniej klocków, wypełnianie i zapis .snapshot.
+"""Editor logic: game blocks, merging cells into as few blocks as possible, flood fill and saving a .snapshot.
 
-Siatka: 1 kratka = 1 jednostka w grze, kratka (x, y) ma środek w punkcie (x, y).
-Rozmiary klocków i punkty zaczepienia wzięte z colliderów prefabów gry (PlaceableMetadataList.allBlockPrefabs,
-indeks w tej tablicy = blockID w pliku). Szczegóły w notes/format-snapshot.md.
+Grid: 1 cell = 1 game unit, cell (x, y) is centered at (x, y).
+Block sizes and pivots match the game's colliders; block_id is the blockID used in the level file.
 """
 import colorsys
 import os
 from xml.sax.saxutils import quoteattr
 
-# Krawędź ściany jest 4.5 od jej pozycji (zmierzone w grze), więc ściana stoi 5 za skrajną wolną kratką.
+# A wall's edge is 4.5 from its position (measured in the game), so the wall sits 5 beyond the last free cell.
 MIN_SIDE, MAX_SIDE = 10, 80
-X_RANGE, Y_RANGE = (-59, 57), (-44, 45)  # skrajne wolne kratki przy najdalszych ścianach w levelach z gry
+X_RANGE, Y_RANGE = (-59, 57), (-44, 45)  # outermost free cells with the farthest walls seen in real levels
 
 
 def board(w, h):
-    """Plansza w x h kratek: (x_min, x_max, y_min, y_max). 72x37 = domyślny BlankLevel; większe rosną w obie strony."""
-    x, y = -(w // 2), -26 - round((h - 37) * 13 / 43)  # 80 wysokości: y -39..40, w zakresie leveli z gry
+    """Board of w x h cells: (x_min, x_max, y_min, y_max). 72x37 = the default BlankLevel; larger ones grow both ways."""
+    x, y = -(w // 2), -26 - round((h - 37) * 13 / 43)  # height 80: y -39..40, within the range of real levels
     return x, x + w - 1, y, y + h - 1
 
 
 def resized(b, w, h):
-    """Plansza b w nowym rozmiarze: rośnie i maleje w obie strony od swojego środka."""
+    """Board b in a new size: grows and shrinks both ways from its center."""
     x = min(max((b[0] + (b[1] - b[0] + 1) // 2) - w // 2, X_RANGE[0]), X_RANGE[1] - w + 1)
     y = min(max((b[2] + (b[3] - b[2] + 1) // 2) - h // 2, Y_RANGE[0]), Y_RANGE[1] - h + 1)
     return x, x + w - 1, y, y + h - 1
 
 
 def drag_edges(b, edges, dx, dy):
-    """Plansza b po przesunięciu krawędzi (podzbiór "lrtb") o dx, dy kratek, w granicach MIN_SIDE..MAX_SIDE."""
+    """Board b after moving edges (a subset of "lrtb") by dx, dy cells, within MIN_SIDE..MAX_SIDE."""
     x0, x1, y0, y1 = b
     if "l" in edges:
         x0 = min(max(x0 + dx, x1 - MAX_SIDE + 1, X_RANGE[0]), x1 - MIN_SIDE + 1)
@@ -42,7 +41,7 @@ def drag_edges(b, edges, dx, dy):
 
 X_MIN, X_MAX, Y_MIN, Y_MAX = board(40, 40)
 
-# Limit zapełnienia (GameSettings.LevelFullnessScoreLimit w resources.assets). Ponad nim gra blokuje publikowanie.
+# The game's fullness limit. Above it the game blocks publishing.
 FULLNESS_LIMIT = 5000
 
 
@@ -60,18 +59,18 @@ SNAPSHOT_DIR = os.path.join(os.environ.get("USERPROFILE", ""), "AppData", "Local
 
 
 class Piece:
-    """Przedmiot z gry. bounds = prostokąt zajmowany przy obrocie 0, względem punktu zaczepienia (pX, pY)."""
+    """Item from the game. bounds = rectangle covered at rotation 0, relative to the pivot (pX, pY)."""
 
     def __init__(self, block_id, name, minx, miny, maxx, maxy):
         self.block_id, self.name = block_id, name
         self.bounds = (minx, miny, maxx, maxy)
 
     def footprints(self):
-        """(w, h, rZ, minx, miny) dla obrotu 0 i 90 (180/270 dają te same kształty)."""
+        """(w, h, rZ, minx, miny) for rotation 0 and 90 (180/270 give the same shapes)."""
         minx, miny, maxx, maxy = self.bounds
         yield round(maxx - minx), round(maxy - miny), 0, minx, miny
         if maxx - minx != maxy - miny:
-            # obrót o 90° w lewo: (x, y) -> (-y, x)
+            # rotate 90° left: (x, y) -> (-y, x)
             yield round(maxy - miny), round(maxx - minx), 90, -maxy, minx
 
 
@@ -79,14 +78,14 @@ def _setpiece(bid, name, minx, miny, maxx, maxy):
     return Piece(bid, name, minx, miny, maxx, maxy)
 
 
-# Klocki z trybu tworzenia (SetPiece): kolorowalne, twarde.
+# Creative mode blocks (SetPiece): colorable, solid.
 SETPIECES = [
     _setpiece(40, "100_SetPiece1x1", -0.5, -0.5, 0.5, 0.5),
     _setpiece(41, "101_SetPiece1x2", -0.5, -0.5, 1.5, 0.5),
     _setpiece(42, "102_SetPiece1x3", -1.5, -0.5, 1.5, 0.5),
     _setpiece(43, "103_SetPiece1x4", -1.5, -0.5, 2.5, 0.5),
     _setpiece(44, "104_SetPiece1x8", -4.5, -0.5, 3.5, 0.5),
-    _setpiece(45, "105_SetPiece1x14", -7.5, -0.5, 8.5, 0.5),  # mimo nazwy collider ma 16 kratek
+    _setpiece(45, "105_SetPiece1x14", -7.5, -0.5, 8.5, 0.5),  # despite the name it is 16 cells long
     _setpiece(46, "106_SetPiece2x4", -1.5, -1.5, 2.5, 0.5),
     _setpiece(47, "107_SetPiece2x2", -0.5, -1.5, 1.5, 0.5),
     _setpiece(48, "108_SetPiece4x4", -1.5, -2.5, 2.5, 1.5),
@@ -102,14 +101,14 @@ WOOD = [
     Piece(5, "06_Beam", -3, -0.5, 3, 0.5),
 ]
 SPIKE = Piece(10, "11_1x1 Spike Block", -0.5, -0.5, 0.5, 0.5)
-# Drut x3 = wpis główny (55) + 1-3 części (blockID 13, BarbedwireSetPiece1..3), każda przyczepiona (parentID) do klocka,
-# na którym leży. Bez części gra niszczy drut ("Destroying unused sub-element"), więc odcinek 1-2 kratek też jest OK.
+# Wire x3 = a main entry (55) + 1-3 parts (blockID 13, BarbedwireSetPiece1..3), each attached (parentID) to the block
+# it lies on. Without parts the game destroys the wire, so a run of 1-2 cells is fine too.
 WIRE_MAIN, WIRE_PART = 55, 13
-START = Piece(38, "StartPlank", -2, -0.5, 2, 0.5)  # deska 4x1, strefa startu 4x4 nad nią
-GOAL = Piece(39, "GoalBlock", -0.5, -0.5, 0.5, 0.5)  # klocek 1x1, strefa mety nad nim: dx -2..1, dy 1..4
+START = Piece(38, "StartPlank", -2, -0.5, 2, 0.5)  # 4x1 plank with a 4x4 start zone above
+GOAL = Piece(39, "GoalBlock", -0.5, -0.5, 0.5, 0.5)  # 1x1 block with the goal zone above: dx -2..1, dy 1..4
 
-# Paleta kolorów klocków z gry: 36 kolorów, każdy użyty w >= 88 levelach z folderu snapshots
-# (następne kolory to już zaokrąglone warianty tych samych, w <= 15 levelach).
+# Block color palette: 36 colors, each used in >= 88 of 530 checked levels
+# (the next ones are rounded variants of the same colors, in <= 15 levels).
 PALETTE = [
     (0.053, 0.053, 0.053), (0.447, 0.447, 0.447), (0.2647059, 0.1474943, 0.1206748),
     (0.1911765, 0.1084139, 0.07590831), (0.3308824, 0.3308824, 0.3308824), (0.253, 0.253, 0.253),
@@ -124,38 +123,38 @@ PALETTE = [
     (0.5514706, 0.1257028, 0.1257028), (0.2078362, 0.2205882, 0.1281358), (0.3414807, 0.3823529, 0.295199),
     (0.06617647, 0.06617647, 0.06617647), (0.4485294, 0.313311, 0.4447993), (0.0, 0.1955882, 0.2132353),
 ]
-# shortcut: kolejność moja (szarości, potem odcienie od czerwonego), nie jak w księdze gry (tej nie znamy)
+# shortcut: the order is ours (greys, then hues from red), not the one in the game
 PALETTE.sort(key=lambda c: (colorsys.rgb_to_hsv(*c)[1] > 0.15, round(colorsys.rgb_to_hsv(*c)[0] * 12) % 12,
                             colorsys.rgb_to_hsv(*c)[2]))
 
 
 def screen_color(rgb):
-    """Jak kolor wygląda w grze: ok. 2x jaśniej niż colR/G/B (zmierzone na zrzucie)."""
+    """How a color looks in the game: about 2x brighter than colR/G/B (measured on a screenshot)."""
     return tuple(min(255, round(v * 2 * 255)) for v in rgb)
 
 
-# Rodzaje kratek w edytorze. rgb = kolor klocka w grze (colR/G/B), color = kolor w edytorze.
-KINDS = {f"kolor{i}": dict(label=f"Kolor {i + 1}", color=screen_color(c), pieces=SETPIECES, rgb=c)
+# Cell kinds in the editor. rgb = block color in the game (colR/G/B), color = color in the editor.
+KINDS = {f"color{i}": dict(label=f"Color {i + 1}", color=screen_color(c), pieces=SETPIECES, rgb=c)
          for i, c in enumerate(PALETTE)}
 KINDS.update({
-    "drewno": dict(label="Drewno (deski)", color=(190, 140, 80), pieces=WOOD),
-    "kolce":  dict(label="Kolczasta kula", color=(150, 150, 150), pieces=[SPIKE]),
-    # drut nie dzieli się na prostokąty, tylko na odcinki po 3 wzdłuż klocka, do którego się przyczepia (wire_chunks)
-    "drut":   dict(label="Drut kolczasty", color=(70, 70, 70), pieces=None, rgb=(0.1764706, 0.1764706, 0.1764706)),
+    "wood": dict(label="Wood (planks)", color=(190, 140, 80), pieces=WOOD),
+    "spike":  dict(label="Spikeball", color=(150, 150, 150), pieces=[SPIKE]),
+    # wire is not split into rectangles but into runs of 3 along the block it attaches to (wire_chunks)
+    "wire":   dict(label="Barbed wire", color=(70, 70, 70), pieces=None, rgb=(0.1764706, 0.1764706, 0.1764706)),
 })
 
 
 def rot(v, rz):
-    """Obrót wektora o rZ stopni w lewo (jak w grze)."""
+    """Rotates a vector by rZ degrees to the left (as in the game)."""
     x, y = v
     return {0: (x, y), 90: (-y, x), 180: (-x, -y), 270: (y, -x)}[rz]
 
 
 def wire_chunks(wire, solid):
-    """Dzieli kratki drutu na odcinki (rZ, [kratki]) po max 3, każdy przyczepiony do klocków z `solid`.
+    """Splits wire cells into runs (rZ, [cells]) of at most 3, each attached to blocks from `solid`.
 
-    Drut leży na klocku pod nim (rZ 0), wisi pod klockiem (180) albo trzyma się boku (90: klocek z prawej, 270: z lewej).
-    Zwraca (odcinki, kratki bez żadnego klocka obok).
+    Wire lies on the block below (rZ 0), hangs under a block (180) or clings to a side (90: block on the right, 270: left).
+    Returns (runs, cells with no block next to them).
     """
     groups, skipped = {}, []
     for c in wire:
@@ -182,10 +181,10 @@ def wire_chunks(wire, solid):
 
 
 def tile(cells, pieces):
-    """Dzieli zbiór kratek na prostokąty z dostępnych klocków, zachłannie: największy pasujący najpierw.
+    """Splits a set of cells into rectangles of the available blocks, greedily: the largest fitting one first.
 
-    Zwraca listę (x0, y0, piece, footprint), x0/y0 = lewa dolna kratka. Każda kratka trafia do dokładnie jednego klocka,
-    o ile wśród klocków jest 1x1 (jest w każdym rodzaju).
+    Returns a list of (x0, y0, piece, footprint), x0/y0 = bottom left cell. Each cell ends up in exactly one block,
+    as long as there is a 1x1 block (every kind has one).
     """
     left = set(cells)
     shapes = sorted(((fp, p) for p in pieces for fp in p.footprints()),
@@ -195,7 +194,7 @@ def tile(cells, pieces):
         w, h = fp[0], fp[1]
         if not left:
             break
-        # od lewego górnego rogu, jak się czyta
+        # from the top left corner, in reading order
         for x0, y0 in sorted(left, key=lambda c: (-c[1], c[0])):
             if all((x0 + i, y0 + j) in left for j in range(h) for i in range(w)):
                 left.difference_update((x0 + i, y0 + j) for j in range(h) for i in range(w))
@@ -205,9 +204,9 @@ def tile(cells, pieces):
 
 
 def flood_fill(grid, start, kind, in_bounds):
-    """Wypełnianie jak w Paincie: zamienia spójny (4 sąsiadów) obszar tego samego rodzaju co `start` na `kind`.
+    """Paint-style fill: turns a connected (4 neighbours) area of the same kind as `start` into `kind`.
 
-    grid: dict (x, y) -> rodzaj; puste kratki nie są w dict. kind=None czyści obszar.
+    grid: dict (x, y) -> kind; empty cells are not in the dict. kind=None clears the area.
     """
     old = grid.get(start)
     if old == kind or not in_bounds(start):
@@ -226,7 +225,7 @@ def flood_fill(grid, start, kind, in_bounds):
 
 
 def color_dist(a, b):
-    """Odległość kolorów bliższa temu, jak widzi oko, niż zwykłe RGB („redmean”)."""
+    """Color distance closer to how the eye sees it than plain RGB ("redmean")."""
     r = (a[0] + b[0]) / 2
     dr, dg, db = a[0] - b[0], a[1] - b[1], a[2] - b[2]
     return ((2 + r / 256) * dr * dr + 4 * dg * dg + (2 + (255 - r) / 256) * db * db) ** 0.5
@@ -236,22 +235,22 @@ _nearest = {}
 
 
 def nearest_kind(p):
-    """Najbliższy kolor klocka, "white" dla prawie białego albo None dla przezroczystego."""
+    """Nearest block color, "white" for almost white, or None for transparent."""
     if p[3] < 128:
         return None
     k = p[0] >> 1, p[1] >> 1, p[2] >> 1
     if k not in _nearest:
-        if color_dist(p, (255, 255, 255)) < 45:  # najjaśniejszy klocek jest od białego o ok. 81
+        if color_dist(p, (255, 255, 255)) < 45:  # the lightest block is about 81 away from white
             _nearest[k] = "white"
         else:
-            _nearest[k] = min((color_dist(p, v["color"]), n) for n, v in KINDS.items() if n.startswith("kolor"))[1]
+            _nearest[k] = min((color_dist(p, v["color"]), n) for n, v in KINDS.items() if n.startswith("color"))[1]
     return _nearest[k]
 
 
 def find_grid(data, w, h):
-    """Siatka powiększonego pixel artu: (bok kratki, ox, oy) albo None. data = bajty RGBA.
+    """Grid of enlarged pixel art: (cell side, ox, oy) or None. data = RGBA bytes.
 
-    Wszystkie zmiany koloru muszą leżeć na liniach co `bok` pikseli (97%, żeby przeżyć pojedyncze wady i przycięcie).
+    All color changes must lie on lines every `side` pixels (97%, to survive single flaws and cropping).
     """
     def changes(n, lines, at):
         out = {}
@@ -283,7 +282,7 @@ def find_grid(data, w, h):
 
 
 def downsample(data, w, h, nw, nh, ox=0.0, oy=0.0, sx=None, sy=None):
-    """Zmniejsza obrazek RGBA do nw x nh: w każdej kratce wygrywa najczęstszy kolor, zamiast mieszania kolorów na krawędziach."""
+    """Shrinks an RGBA image to nw x nh: the most common color wins in each cell, instead of mixing colors at edges."""
     sx, sy = sx or w / nw, sy or h / nh
     out = []
     for y in range(nh):
@@ -302,12 +301,12 @@ def downsample(data, w, h, nw, nh, ox=0.0, oy=0.0, sx=None, sy=None):
 
 
 def image_to_cells(pixels, step=30):
-    """Obrazek (lista wierszy z góry na dół, piksele RGBA, już zmniejszony do rozmiaru kratek) -> {(kol, wiersz): rodzaj}.
+    """Image (list of rows from top to bottom, RGBA pixels, already scaled to the cell size) -> {(col, row): kind}.
 
-    Jeśli co najmniej 10% obrazka jest białe, tłem jest tylko biel. W innym razie (np. zrzut z gry z niebem)
-    tło jak wypełnianie w Paincie z tolerancją: zaczyna od kolorów, które zajmują >= 5% brzegu, i od najczęstszego
-    koloru obrazka, i rozlewa się na sąsiednie piksele różniące się o mniej niż `step` (dzięki temu łapie też gradient nieba).
-    Tło i przezroczyste piksele zostają puste, reszta dostaje najbliższy kolor z palety klocków. Wiersz 0 = góra obrazka.
+    If at least 10% of the image is white, only white is background. Otherwise (e.g. a game screenshot with sky)
+    the background works like a paint fill with tolerance: it starts from colors covering >= 5% of the border and from
+    the most common color, and spreads to neighbouring pixels differing by less than `step` (so it follows a sky gradient).
+    Background and transparent pixels stay empty, the rest gets the nearest block color. Row 0 = top of the image.
     """
     h, w = len(pixels), len(pixels[0])
     key = lambda p: tuple(v // 32 for v in p[:3])
@@ -323,7 +322,7 @@ def image_to_cells(pixels, step=30):
         count = {}
         for x, y in cells:
             count[key(pixels[y][x])] = count.get(key(pixels[y][x]), 0) + 1
-        # shortcut: najczęstszy kolor zawsze jest tłem; obrazek bez tła (np. zdjęcie na cały ekran) straci ten kolor
+        # shortcut: the most common color is always background; an image without one (e.g. a full screen photo) loses that color
         seed_keys |= {k for k, n in count.items() if n >= share * len(cells)} if share else {max(count, key=count.get)}
     bg = {c for c in pos if key(pixels[c[1]][c[0]]) in seed_keys}
     stack = list(bg)
@@ -334,12 +333,12 @@ def image_to_cells(pixels, step=30):
                     and color_dist(pixels[q[1]][q[0]], pixels[y][x]) < step:
                 bg.add(q)
                 stack.append(q)
-    # kawałki tła odcięte od reszty (np. niebo pod podłogą): ten sam odcień co duża część znalezionego tła
+    # background cut off from the rest (e.g. sky below the floor): the same shade as a large part of the found background
     share = {}
     for x, y in bg:
         share[key(pixels[y][x])] = share.get(key(pixels[y][x]), 0) + 1
     bg |= {(x, y) for x, y in pos if share.get(key(pixels[y][x]), 0) >= 0.03 * len(pos)}
-    # czarne pasy u góry i u dołu (letterbox); najciemniejszy klocek ma 27, więc go nie ruszają
+    # black bars at the top and bottom (letterbox); the darkest block is 27, so it is not affected
     for rows in (range(h), range(h - 1, -1, -1)):
         bar, pending = set(), set()
         for y in rows:
@@ -347,35 +346,35 @@ def image_to_cells(pixels, step=30):
             if any(max(pixels[y][x][:3]) >= 16 for x, _ in left):
                 break
             pending.update(left)
-            if len(left) >= w / 2:  # pas, a nie pojedyncze czarne piksele
+            if len(left) >= w / 2:  # a bar, not single black pixels
                 bar |= pending
         bg |= bar
-    colors = [(k, KINDS[k]["color"]) for k in KINDS if k.startswith("kolor")]
+    colors = [(k, KINDS[k]["color"]) for k in KINDS if k.startswith("color")]
     return {(x, y): min(colors, key=lambda kc: color_dist(pixels[y][x], kc[1]))[0] for x, y in pos if (x, y) not in bg}
 
 
 def fullness(grid):
-    """Punkty zapełnienia levelu (bez mety): klocek kolorowy 5, deska i kula 10, niezależnie od rozmiaru.
+    """Fullness points of a level (without the goal): colored block 5, plank and ball 10, whatever the size.
 
-    Drut: 5 za wpis główny i 5 za każdą część (tak wychodzi 5% na zrzucie z gry; w plikach nie odczytane wprost).
+    Wire: 5 for the main entry and 5 for each part (matches the percentage shown in the game, not read from its files).
     """
     by = {}
     for c, k in grid.items():
         by.setdefault(k, set()).add(c)
-    wire = by.pop("drut", set())
-    total = sum(len(tile(cells, KINDS[k]["pieces"])) * (5 if k.startswith("kolor") else 10) for k, cells in by.items())
+    wire = by.pop("wire", set())
+    total = sum(len(tile(cells, KINDS[k]["pieces"])) * (5 if k.startswith("color") else 10) for k, cells in by.items())
     return total + sum(5 * (len(run) + 1) for _, run in wire_chunks(wire, set().union(*by.values()))[0])
 
 
 def agreement(small, ssize, big, bsize):
-    """Jaka część kratek dużej wersji obrazka wygląda tak samo w małej (0..1)."""
+    """Share of cells of the large version that look the same in the small one (0..1)."""
     same = sum(small.get((x * ssize[0] // bsize[0], y * ssize[1] // bsize[1])) == big.get((x, y))
                for x in range(bsize[0]) for y in range(bsize[1]))
     return same / (bsize[0] * bsize[1])
 
 
 def place(x0, y0, fp):
-    """Pozycja punktu zaczepienia klocka, którego lewa dolna kratka to (x0, y0)."""
+    """Position of the pivot of a block whose bottom left cell is (x0, y0)."""
     _, _, rz, minx, miny = fp
     return x0 - 0.5 - minx, y0 - 0.5 - miny, rz
 
@@ -385,16 +384,16 @@ def _num(v):
 
 
 def build_xml(grid, start, goal):
-    """XML pliku .snapshot dla BlankLevel. start = lewa kratka deski startowej, goal = kratka flagi."""
+    """XML of a .snapshot file for BlankLevel. start = left cell of the start plank, goal = cell of the flag."""
     if start is None and goal is None:
-        raise ValueError("Postaw start i metę przed zapisem.")
+        raise ValueError("Place the start and the goal before saving.")
     if start is None:
-        raise ValueError("Postaw start przed zapisem.")
+        raise ValueError("Place the start before saving.")
     if goal is None:
-        raise ValueError("Postaw metę przed zapisem.")
+        raise ValueError("Place the goal before saving.")
     lines = []
     sid = 0
-    covered = {}  # kratka -> sceneID klocka (do przyczepienia drutu)
+    covered = {}  # cell -> sceneID of its block (for attaching wire)
 
     def block(bid, px, py, rz, pid, extra=""):
         nonlocal sid
@@ -412,27 +411,27 @@ def build_xml(grid, start, goal):
         col = f' colR="{rgb[0]}" colG="{rgb[1]}" colB="{rgb[2]}"' if rgb else ""
         for x0, y0, p, fp in tile(cells, KINDS[kind]["pieces"]):
             px, py, rz = place(x0, y0, fp)
-            # ID jak w grze: 1000000 + numer*10 (gra liczy z tego kolejne numery)
+            # IDs as in the game: 1000000 + number*10 (the game derives the next numbers from it)
             s = block(p.block_id, px, py, rz, 1000000 + seq * 10, col)
             seq += 1
             for j in range(fp[1]):
                 for i in range(fp[0]):
                     covered[(x0 + i, y0 + j)] = s
-    rgb = KINDS["drut"]["rgb"]
+    rgb = KINDS["wire"]["rgb"]
     col = f' colR="{rgb[0]}" colG="{rgb[1]}" colB="{rgb[2]}"'
-    # kratki drutu bez klocka obok są pomijane (gra i tak by je zniszczyła); edytor o nich ostrzega
-    for rz, run in wire_chunks([c for c, k in grid.items() if k == "drut"], covered)[0]:
+    # wire cells with no block next to them are skipped (the game would destroy them anyway); the editor warns about them
+    for rz, run in wire_chunks([c for c, k in grid.items() if k == "wire"], covered)[0]:
         pid = 1000000 + seq * 10
         seq += 1
         a, s = rot((1, 0), rz), rot((0, -1), rz)
-        main = block(WIRE_MAIN, run[0][0] + a[0], run[0][1] + a[1], rz, pid, col)  # główny = środkowa część
+        main = block(WIRE_MAIN, run[0][0] + a[0], run[0][1] + a[1], rz, pid, col)  # main = the middle part
         for k, (x, y) in enumerate(run, 1):
             parent = covered[(x + s[0], y + s[1])]
             block(WIRE_PART, x, y, rz, pid + k,
                   f' parentID="{parent}" mainID="{main}" subElementName="BarbedwireSetPiece{k}"{col}')
 
     gx, gy = goal
-    block(GOAL.block_id, gx, gy, 0, 2)  # placeableID 2 = flaga, która już jest w BlankLevel (gra ją przesuwa)
+    block(GOAL.block_id, gx, gy, 0, 2)  # placeableID 2 = the flag already in BlankLevel (the game moves it)
     sx, sy, _ = place(start[0], start[1], next(START.footprints()))
     moved = [("7", "DeathPit", -0.9, Y_MIN - 5, 0), ("9", "LeftWall", X_MIN - 5, 2, 270),
              ("8", "Ceiling", 6.5, Y_MAX + 5, 180), ("6", "RightWall", X_MAX + 5, -25.9, 90), ("11", "StartPlank", sx, sy, 0)]
@@ -445,19 +444,19 @@ def build_xml(grid, start, goal):
 
 
 def save(name, xml, folder=SNAPSHOT_DIR):
-    """Zapisuje czysty XML jako <name>.c.snapshot (gra przyjmuje XML, gdy plik zaczyna się od '<').
+    """Saves plain XML as <name>.c.snapshot (the game accepts XML when the file starts with '<').
 
-    Nadpisuje tylko pliki z edytora (czysty XML); levele zapisane przez grę są skompresowane i zostają nietknięte.
+    Overwrites only files made by the editor (plain XML); levels saved by the game are compressed and stay untouched.
     """
     name = "".join(ch for ch in name if ch not in '<>:"/\\|?*').strip()
     if not name:
-        raise ValueError("Podaj nazwę levelu.")
+        raise ValueError("Enter a level name.")
     path = os.path.join(folder, name + ".c.snapshot")
     if os.path.exists(path):
         with open(path, "rb") as f:
             if f.read(1) != b"<":
-                raise ValueError("Level „{}” już istnieje i nie jest z edytora. Wybierz inną nazwę.", name)
-        # stara miniaturka z gry pokazywałaby poprzednią wersję; gra zrobi nową przy następnym graniu
+                raise ValueError("Level “{}” already exists and was not made in this editor. Choose another name.", name)
+        # the old thumbnail would show the previous version; the game makes a new one the next time the level is played
         for ext in (".jpg", ".png"):
             thumb = os.path.join(folder, "thumbnails", f"l_{name}{ext}")
             if os.path.exists(thumb):

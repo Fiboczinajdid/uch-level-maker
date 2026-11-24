@@ -1,8 +1,9 @@
-"""Edytor leveli UCH w osobnym oknie. Uruchom: python editor.py
+"""UCH level editor in its own window. Run: python editor.py
 
-LPM rysuje (przytrzymaj, żeby rysować ciągle). PPM zaznacza prostokąt; przeciągnij zaznaczenie, żeby je przesunąć
-(Delete usuwa, Esc odznacza). Kółko przybliża i oddala widok, wciśnięte kółko go przesuwa. Przeciąganie krawędzi siatki
-zmienia rozmiar planszy. Pozostałe klawisze: okno Ustawienia (domyślne: KEYS). Ctrl+Z = cofnij, Ctrl+Y = ponów, Ctrl+S = zapisz. Level trafia do folderu snapshots gry jako <nazwa>.c.snapshot.
+Left mouse draws (hold to keep drawing). Right mouse selects a rectangle; drag the selection to move it
+(Delete removes it, Esc deselects). The wheel zooms, holding the wheel pans. Dragging a grid edge resizes the board.
+Other keys: see the Settings window (defaults: KEYS). Ctrl+Z = undo, Ctrl+Y = redo, Ctrl+S = save.
+The level goes to the game's snapshots folder as <name>.c.snapshot.
 """
 import ctypes
 import io
@@ -20,20 +21,20 @@ from lang import tr
 
 COLS = ROWS = 0
 ZOOM_MAX = 64
-SIDE = 231  # szerokość panelu (z boku) albo jednej jego kolumny (pod planszą)
-PAD = 10  # odstęp od krawędzi panelu
-SIDE_H, BOTTOM_H = 832, 272  # wysokość okna z panelem z boku / panelu pod planszą
+SIDE = 231  # width of the panel (at the side) or of one of its columns (below the board)
+PAD = 10  # padding from the panel's edge
+SIDE_H, BOTTOM_H = 832, 272  # height of a window with the panel at the side / of the panel below the board
 STATUS = 32
-MARGIN = 12  # pasek dookoła siatki, za który łapie się krawędzie
-DETAIL_OK = 0.93  # tyle kratek musi się zgadzać z największą wersją, żeby mniejsza plansza wystarczyła
-MODES = {"brush": "pędzel", "erase": "gumka", "fill": "wypełnianie"}
-KEYS = {"pl": dict(brush="P", erase="G", fill="W", preview="K", game="I"),  # domyślne: pierwsze litery nazw; zajęta = druga litera
+MARGIN = 12  # strip around the grid for grabbing its edges
+DETAIL_OK = 0.93  # share of cells that must match the largest version for a smaller board to be good enough
+MODES = {"brush": "brush", "erase": "eraser", "fill": "fill"}
+KEYS = {"pl": dict(brush="P", erase="G", fill="W", preview="K", game="I"),  # defaults: first letters of the names; if taken, the second letter
         "en": dict(brush="B", erase="E", fill="F", preview="L", game="G")}
-COLOR_KINDS = [k for k in L.KINDS if k.startswith("kolor")]
-ITEMS = ["drewno", "kolce", "drut", "start", "meta"]
-COLOR = {**{k: v["color"] for k, v in L.KINDS.items()}, "start": (200, 170, 60), "meta": (250, 215, 0)}
-# Plansza jak kartka w kratkę (jasny) i granatowa kalka (ciemny). Panel jest neutralnie szary, żeby nie przekłamywał kolorów klocków.
-# accent (żółty) = coś czeka: niezapisany level, niezastosowany rozmiar. on = zaznaczone. danger = kasowanie.
+COLOR_KINDS = [k for k in L.KINDS if k.startswith("color")]
+ITEMS = ["wood", "spike", "wire", "start", "goal"]
+COLOR = {**{k: v["color"] for k, v in L.KINDS.items()}, "start": (200, 170, 60), "goal": (250, 215, 0)}
+# The board looks like graph paper (light) and blueprint (dark). The panel is neutral grey so it does not distort block colors.
+# accent (yellow) = something is waiting: unsaved level, unapplied size. on = selected. danger = deleting.
 THEMES = {
     "dark": dict(bg=(33, 35, 37), panel=(48, 50, 51), hair=(66, 69, 70), grid=(36, 47, 62), thin=(47, 60, 78), thick=(84, 104, 133),
                  text=(238, 236, 230), muted=(178, 179, 175), off=(112, 115, 115), btn=(66, 69, 70), hover=(82, 85, 86),
@@ -46,7 +47,7 @@ THEMES = {
 }
 T = THEMES["dark"]
 FONTS = [os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", f) for f in ("bahnschrift.ttf", "segoeui.ttf")]
-# ikony na siatce 16x16: łamane, a (x, y, r) to kółko
+# icons on a 16x16 grid: polylines, and (x, y, r) is a circle
 _UNDO = ((10.5, 12.5), (6, 12.5)), ((3, 6), (10, 6), (12.2, 6.9), (13.2, 9.2), (12.2, 11.6), (10, 12.5)), ((6, 3), (3, 6), (6, 9))
 ICONS = {
     "brush": (((3, 13), (4, 9.7), (10.8, 2.9), (13.1, 5.2), (6.3, 12), (3, 13)), ((9, 4.7), (11.3, 7))),
@@ -63,14 +64,14 @@ ICONS = {
     "close": (((4, 4), (12, 12)), ((12, 4), (4, 12))),
     "check": (((3.2, 8.4), (6.6, 11.6), (12.8, 4.6)),),
 }
-SETTINGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+SETTINGS = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "UCH level maker", "settings.json")
 CURSORS = {"l": "SIZEWE", "r": "SIZEWE", "t": "SIZENS", "b": "SIZENS", "lt": "SIZENWSE", "rb": "SIZENWSE", "rt": "SIZENESW", "lb": "SIZENESW"}
-SKY_TOP, SKY_BOTTOM = (88, 182, 222), (150, 214, 236)  # jak niebo na miniaturce BlankLevel
+SKY_TOP, SKY_BOTTOM = (88, 182, 222), (150, 214, 236)  # like the sky on the BlankLevel thumbnail
 
 
 def fit_window(cols, rows, desk):
-    """Najlepsze okno dla planszy: (kratka, czy panel pod planszą, (szer, wys)). Wygrywa układ z mniejszą ilością pustego miejsca."""
-    w, h = max(desk[0] - 40, 1000), max(desk[1] - 110, SIDE_H)  # zapas na ramkę okna i pasek zadań
+    """Best window for a board: (cell, is the panel below, (width, height)). The layout with less empty space wins."""
+    w, h = max(desk[0] - 40, 1000), max(desk[1] - 110, SIDE_H)  # room for the window frame and the taskbar
     out = []
     for bottom in (False, True):
         cell = fit_cell(cols, rows, (w, h), bottom)
@@ -81,26 +82,26 @@ def fit_window(cols, rows, desk):
 
 
 def fit_cell(cols, rows, size, bottom):
-    """Największa kratka, przy której plansza mieści się w oknie."""
+    """Largest cell size at which the board fits the window."""
     w, h = size[0] - 2 * MARGIN, size[1] - 2 * MARGIN - STATUS
     return min(w // cols, (h - BOTTOM_H) // rows) if bottom else min((w - SIDE) // cols, h // rows)
 
 
 class Camera:
-    """Widok planszy: z = pikseli na kratkę, (x, y) = punkt świata na środku pola widoku (kratka x zajmuje x..x+1)."""
+    """View of the board: z = pixels per cell, (x, y) = world point at the center of the view (cell x spans x..x+1)."""
 
     def __init__(self):
         self.view = pygame.Rect(0, 0, 1, 1)
         self.z = self.target = self.raw = 10.0
         self.x = self.y = 0.0
-        self.anchor = None  # (piksel, punkt świata), który przy zoomie stoi w miejscu
-        self.to_center = False  # płynnie wracaj na środek planszy (gdy plansza urosła poza widok)
+        self.anchor = None  # (pixel, world point) that stays put while zooming
+        self.to_center = False  # glide back to the center of the board (when the board outgrew the view)
 
     def fit(self):
         return max(min((self.view.w - 2 * MARGIN) // COLS, (self.view.h - 2 * MARGIN) // ROWS), 2)
 
     def reset(self):
-        """Cała plansza na środku, bez animacji."""
+        """The whole board, centered, without animation."""
         self.z = self.target = self.raw = float(self.fit())
         self.x, self.y = L.X_MIN + COLS / 2, L.Y_MIN + ROWS / 2
         self.anchor, self.to_center = None, False
@@ -115,14 +116,14 @@ class Camera:
     def zoom(self, steps, pos):
         low = max(self.fit() * 0.4, 2)
         self.raw = min(max(self.raw * 1.2 ** steps, low), ZOOM_MAX)
-        self.target = float(round(self.raw))  # po zatrzymaniu cała liczba pikseli: wszystkie kratki równe
-        if self.target <= self.fit():  # cała plansza w widoku: wraca na środek
+        self.target = float(round(self.raw))  # a whole number of pixels at rest: all cells equal
+        if self.target <= self.fit():  # the whole board is visible: back to the center
             self.anchor, self.to_center = None, True
         else:
             self.anchor, self.to_center = (pos, self.world(pos)), False
 
     def show_all(self):
-        """Płynnie oddala, jeśli plansza nie mieści się w widoku."""
+        """Smoothly zooms out if the board does not fit the view."""
         if self.fit() < self.target:
             self.target = self.raw = float(self.fit())
         self.anchor, self.to_center = None, True
@@ -134,12 +135,12 @@ class Camera:
         self.clamp()
 
     def clamp(self):
-        """Środek widoku zostaje nad planszą, więc nie da się jej zgubić."""
+        """The center of the view stays over the board, so it can't get lost."""
         self.x = min(max(self.x, L.X_MIN), L.X_MAX + 1)
         self.y = min(max(self.y, L.Y_MIN), L.Y_MAX + 1)
 
     def update(self, dt):
-        """Jedna klatka animacji; dt w sekundach. Tempo nie zależy od liczby klatek."""
+        """One animation frame; dt in seconds. The speed does not depend on the frame rate."""
         k = 1 - math.exp(-dt * 16)
         if self.z != self.target:
             self.z *= (self.target / self.z) ** k
@@ -176,20 +177,20 @@ def grid_rect():
 
 
 def edges_at(pos):
-    """Krawędzie siatki pod myszką: "l", "r", "t", "b" albo róg, np. "lt"; "" = żadna. Łapie się tuż za siatką."""
+    """Grid edges under the mouse: "l", "r", "t", "b" or a corner such as "lt"; "" = none. Grabbed just outside the grid."""
     g = grid_rect()
     if not cam.view.collidepoint(pos) or g.collidepoint(pos) or not g.inflate(2 * MARGIN, 2 * MARGIN).collidepoint(pos):
         return ""
     x, y = pos
-    near = 4  # przy rogu łapie oba boki
+    near = 4  # near a corner both sides are grabbed
     return ("l" if x < g.left + near else "r" if x >= g.right - near else "") + \
            ("t" if y < g.top + near else "b" if y >= g.bottom - near else "")
 
 
 def label(t):
-    if t.startswith("kolor"):
-        return tr("Kolor {}", int(t[5:]) + 1)
-    return tr({"start": "Start (deska 4x1)", "meta": "Meta (flaga)"}.get(t) or L.KINDS[t]["label"])
+    if t.startswith("color"):
+        return tr("Color {}", int(t[5:]) + 1)
+    return tr({"start": "Start (4x1 plank)", "goal": "Goal (flag)"}.get(t) or L.KINDS[t]["label"])
 
 
 def in_bounds(c):
@@ -201,7 +202,7 @@ def darker(c, f=0.7):
 
 
 def clipboard_image():
-    """Obrazek ze schowka Windows (np. po Win+Shift+S) jako pygame.Surface albo None."""
+    """Image from the Windows clipboard (e.g. after Win+Shift+S) as a pygame.Surface, or None."""
     CF_DIB = 8
     u32, k32 = ctypes.windll.user32, ctypes.windll.kernel32
     k32.GlobalLock.restype = ctypes.c_void_p
@@ -216,7 +217,7 @@ def clipboard_image():
         k32.GlobalUnlock(h)
     finally:
         u32.CloseClipboard()
-    # schowek trzyma BMP bez 14-bajtowego nagłówka pliku: doklejamy go
+    # the clipboard holds a BMP without its 14-byte file header: add it
     hsize, bits, comp, used = struct.unpack_from("<I10xHI12xI", dib)
     offset = 14 + hsize + (used or (1 << bits if bits <= 8 else 0)) * 4 + (12 if comp == 3 and hsize == 40 else 0)
     return pygame.image.load(io.BytesIO(b"BM" + struct.pack("<IHHI", 14 + len(dib), 0, 0, offset) + dib), "x.bmp")
@@ -233,32 +234,32 @@ class Editor:
         font = next((f for f in FONTS if os.path.exists(f)), None)
         self.big, self.font, self.small = (pygame.font.Font(font, size) for size in (20, 15, 13))
         self.icons = {}
-        self.mouse = -1, -1  # nad czym podświetlać przyciski
-        self.box = pygame.Rect(0, 0, 0, 0)  # okno ustawień
+        self.mouse = -1, -1  # where to highlight buttons
+        self.box = pygame.Rect(0, 0, 0, 0)  # the settings window
         self.grid, self.start, self.goal = {}, None, None
-        self.saved = None  # stan levelu przy ostatnim udanym zapisie
-        self.image = None  # wklejony obraz, dopóki nie zmienisz kratek: można go jeszcze dopasować do innej planszy
-        self.tool, self.tab = COLOR_KINDS[0], "kolory"
+        self.saved = None  # level state at the last successful save
+        self.image = None  # pasted image, until cells change: it can still be fitted to another board
+        self.tool, self.tab = COLOR_KINDS[0], "colors"
         self.mode, self.preview, self.game_view = "brush", False, False
         self.undo, self.redo = [], []
-        self.text, self.focus = {}, None  # pola tekstowe i to, w którym się pisze
-        self.sel = None  # zaznaczenie: (x0, y0, x1, y1) włącznie
-        self.sel_from = None  # kratka, od której ciągnie się nowe zaznaczenie
-        self.move = None  # przesuwanie: patrz begin_move
+        self.text, self.focus = {}, None  # text fields and the one being typed in
+        self.sel = None  # selection: (x0, y0, x1, y1) inclusive
+        self.sel_from = None  # cell where a new selection started
+        self.move = None  # moving: see begin_move
         self.msg, self.drag, self.last = "", None, None
-        self.tiles = self.surf = None  # złączone klocki i obrazek planszy, liczone od nowa po zmianie
+        self.tiles = self.surf = None  # merged blocks and the board image, recomputed after a change
         self.buttons = {}
-        self.resize = None  # przeciąganie krawędzi: (krawędzie, pozycja myszki, plansza, zoom na początku, czy zapisano cofanie)
-        self.settings = False  # otwarte okno ustawień; zasłania edytor
-        self.binding = None  # skrót, który czeka w ustawieniach na nową literę
+        self.resize = None  # dragging an edge: (edges, mouse position, board, zoom at the start, was undo saved)
+        self.settings = False  # the settings window is open; it covers the editor
+        self.binding = None  # shortcut waiting in settings for a new letter
         self.panning = False
         self.board = None
         self.cursor = ""
         self.load_settings()
-        self.text["name"] = tr("Mój level")
+        self.text["name"] = tr("My level")
         self.set_board(L.board(40, 40))
 
-    # --- ustawienia ---
+    # --- settings ---
     def load_settings(self):
         try:
             with open(SETTINGS, encoding="utf-8") as f:
@@ -268,15 +269,15 @@ class Editor:
         d = d if isinstance(d, dict) else {}
         mine = d.get("keys") if isinstance(d.get("keys"), dict) else {}
         self.keys = {l: dict(mine[l] if self.good_keys(mine.get(l)) else default) for l, default in KEYS.items()}
-        self.apply_settings("light" if d.get("theme") == "light" else "dark", "en" if d.get("lang") == "en" else "pl")
+        self.apply_settings("light" if d.get("theme") == "light" else "dark", "pl" if d.get("lang") == "pl" else "en")
 
     def good_keys(self, k):
-        """Komplet skrótów: każdy to inna litera A-Z."""
+        """A full set of shortcuts: each one a different letter A-Z."""
         return isinstance(k, dict) and k.keys() == KEYS["pl"].keys() and \
             all(isinstance(v, str) and len(v) == 1 and "A" <= v <= "Z" for v in k.values()) and len(set(k.values())) == len(k)
 
     def rebind(self, letter):
-        """Nowa litera dla self.binding; jeśli jest zajęta, skróty zamieniają się literami."""
+        """New letter for self.binding; if it is taken, the shortcuts swap letters."""
         keys = self.keys[lang.current]
         for other, v in keys.items():
             if v == letter:
@@ -294,12 +295,13 @@ class Editor:
         self.apply_settings(theme, language)
         self.msg = ""
         try:
+            os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
             with open(SETTINGS, "w", encoding="utf-8") as f:
                 json.dump({"theme": theme, "lang": language, "keys": {l: k for l, k in self.keys.items() if k != KEYS[l]}}, f)
         except OSError as e:
-            self.alert(tr("Nie da się zapisać ustawień: {}", e))
+            self.alert(tr("Can't save settings: {}", e))
 
-    # --- stan ---
+    # --- state ---
     def reserved(self):
         out = set()
         if self.start:
@@ -314,7 +316,7 @@ class Editor:
         self.redo.clear()
 
     def step(self, src, dst):
-        """Cofnij: step(undo, redo). Ponów: step(redo, undo)."""
+        """Undo: step(undo, redo). Redo: step(redo, undo)."""
         if src:
             dst.append(self.state())
             self.grid, self.start, self.goal, b = src.pop()
@@ -325,9 +327,9 @@ class Editor:
             self.changed()
 
     def set_board(self, b, keep_window=False):
-        """Zmiana rozmiaru. Kratki poza mniejszą planszą zostają w pamięci, tylko się nie zapisują.
+        """Resizes. Cells outside a smaller board stay in memory, they are just not saved.
 
-        keep_window: w trakcie przeciągania okno stoi w miejscu, dopasowuje się dopiero na koniec.
+        keep_window: while dragging the window stays put and is refitted only at the end.
         """
         global COLS, ROWS
         self.board = b
@@ -361,21 +363,21 @@ class Editor:
         return self.drag is not None or self.move or self.sel_from or self.resize or self.panning
 
     def set_focus(self, f):
-        """Zmienia pole, w którym się pisze. Wpisany wymiar czeka w polu na „Zastosuj” albo Enter."""
+        """Changes the field being typed in. A typed size waits in its field for Apply or Enter."""
         for k, n in (("w", COLS), ("h", ROWS)):
             if k == self.focus and k != f:
-                self.text[k] = self.text[k] or str(n)  # puste pole zostawia starą liczbę
+                self.text[k] = self.text[k] or str(n)  # an empty field keeps the old number
         if f in ("w", "h") and f != self.focus:
-            self.text[f] = ""  # od razu wpisujesz nową liczbę
+            self.text[f] = ""  # typing starts a new number right away
         self.focus = f
 
     def typed_size(self):
-        """Wymiary z pól, w dozwolonym zakresie."""
+        """Sizes from the fields, within the allowed range."""
         side = [int(self.text[k] or 0) or n for k, n in (("w", COLS), ("h", ROWS))]
         return [min(max(v, L.MIN_SIDE), L.MAX_SIDE) for v in side]
 
     def nudge(self, f, n):
-        """Strzałki przy polu wymiaru, klawisze góra/dół i kółko nad polem."""
+        """Arrows next to a size field, the up/down keys and the wheel over a field."""
         v = self.typed_size()["wh".index(f)] + n
         self.text[f] = str(min(max(v, L.MIN_SIDE), L.MAX_SIDE))
 
@@ -384,13 +386,13 @@ class Editor:
         side = self.typed_size()
         if side == [COLS, ROWS]:
             self.text["w"], self.text["h"] = str(COLS), str(ROWS)
-        elif self.image:  # wklejony obraz dopasowuje się do wpisanej planszy
+        elif self.image:  # the pasted image adapts to the typed board
             self.place_image(L.resized(self.board, *side))
         else:
             self.push_undo()
             self.set_board(L.resized(self.board, *side))
 
-    # --- zaznaczanie ---
+    # --- selection ---
     def in_sel(self, c):
         return self.sel and self.sel[0] <= c[0] <= self.sel[2] and self.sel[1] <= c[1] <= self.sel[3]
 
@@ -398,7 +400,7 @@ class Editor:
         self.sel = min(a[0], b[0]), min(a[1], b[1]), max(a[0], b[0]), max(a[1], b[1])
 
     def begin_move(self, c):
-        """Podnosi zaznaczone kratki (start i metę też, jeśli są w całości w zaznaczeniu)."""
+        """Lifts the selected cells (the start and the goal too, if fully inside the selection)."""
         x0, y0, x1, y1 = self.sel
         lifted = {k: v for k, v in self.grid.items() if self.in_sel(k)}
         base = {k: v for k, v in self.grid.items() if k not in lifted}
@@ -409,7 +411,7 @@ class Editor:
     def move_to(self, c):
         m = self.move
         x0, y0, x1, y1 = m["sel"]
-        dx = min(max(c[0] - m["at"][0], L.X_MIN - x0), L.X_MAX - x1)  # nie wychodzi poza planszę
+        dx = min(max(c[0] - m["at"][0], L.X_MIN - x0), L.X_MAX - x1)  # stays on the board
         dy = min(max(c[1] - m["at"][1], L.Y_MIN - y0), L.Y_MAX - y1)
         if (dx, dy) == m["d"]:
             return
@@ -427,7 +429,7 @@ class Editor:
         self.changed()
 
     def clear_sel(self):
-        """Usuwa wszystko, co zaznaczone, razem ze startem i metą, jeśli są w całości w zaznaczeniu."""
+        """Deletes everything selected, including the start and the goal if fully inside the selection."""
         if not self.sel:
             return
         self.begin_move((0, 0))
@@ -464,7 +466,7 @@ class Editor:
             self.start = (x, c[1])
             for i in range(4):
                 self.grid.pop((x + i, c[1]), None)
-        elif kind == "meta":
+        elif kind == "goal":
             self.goal = c
             self.grid.pop(c, None)
         elif self.mode == "fill":
@@ -481,67 +483,67 @@ class Editor:
         return {c: k for c, k in self.grid.items() if c not in res and in_bounds(c)}
 
     def wire(self):
-        """Odcinki drutu i kratki drutu bez klocka obok (jak przy zapisie)."""
+        """Wire runs, and wire cells with no block next to them (as on save)."""
         g = self.level_cells()
-        return L.wire_chunks([c for c, k in g.items() if k == "drut"], {c for c, k in g.items() if k != "drut"})
+        return L.wire_chunks([c for c, k in g.items() if k == "wire"], {c for c, k in g.items() if k != "wire"})
 
     def percent(self, g):
-        return round((L.fullness(g) + 10) * 100 / L.FULLNESS_LIMIT)  # +10 = meta
+        return round((L.fullness(g) + 10) * 100 / L.FULLNESS_LIMIT)  # +10 = the goal
 
     def alert(self, text, title=None, buttons=("OK",)):
-        """Okienko systemowe; blokuje edytor. Zwraca numer przycisku: Enter = pierwszy, Esc i X = ostatni."""
-        self.drag = self.sel_from = self.move = self.resize = None  # puszczenie myszki trafi w okienko, nie w edytor
+        """System dialog; blocks the editor. Returns the button number: Enter = first, Esc and X = last."""
+        self.drag = self.sel_from = self.move = self.resize = None  # the mouse release goes to the dialog, not to the editor
         self.panning = False
         self.draw()
-        with warnings.catch_warnings():  # okno-rodzic trzyma okienko na wierzchu; pygame ostrzega, że kiedyś to zmieni
+        with warnings.catch_warnings():  # a parent window keeps the dialog on top; pygame warns that this will change someday
             warnings.simplefilter("ignore", DeprecationWarning)
             parent = pygame.Window.from_display_module()
-        return pygame.display.message_box(title or tr("Uwaga"), text, "warn", parent, buttons, 0, len(buttons) - 1)
+        return pygame.display.message_box(title or tr("Warning"), text, "warn", parent, buttons, 0, len(buttons) - 1)
 
     def state(self):
         return dict(self.grid), self.start, self.goal, self.board
 
     def dirty(self):
-        """Czy są niezapisane zmiany."""
+        """Are there unsaved changes."""
         return bool(self.grid or self.start or self.goal) and (self.grid, self.start, self.goal, self.board) != self.saved
 
     def can_quit(self):
-        """Przy niezapisanych zmianach pyta: zapisać, nie zapisywać czy zostać."""
+        """With unsaved changes asks: save, don't save or stay."""
         if not self.dirty():
             return True
-        n = self.alert(tr("Level ma niezapisane zmiany. Zapisać go przed wyjściem?"), tr("Niezapisany level"),
-                       (tr("Zapisz"), tr("Nie zapisuj"), tr("Anuluj")))
+        n = self.alert(tr("The level has unsaved changes. Save it before closing?"), tr("Unsaved level"),
+                       (tr("Save"), tr("Don't save"), tr("Cancel")))
         return self.do_save() if n == 0 else n == 1
 
     def do_save(self):
-        """Zwraca, czy level się zapisał."""
+        """Returns whether the level was saved."""
         g = self.level_cells()
         try:
             if self.start and not (in_bounds(self.start) and self.start[0] + 3 <= L.X_MAX) or self.goal and not in_bounds(self.goal):
-                raise ValueError("Start albo meta jest poza planszą.")
+                raise ValueError("The start or the goal is outside the board.")
             xml = L.build_xml(g, self.start, self.goal)
             path = L.save(self.text["name"], xml)
             self.saved = self.state()
             n = xml.count("<block") - xml.count("subElementName")
             pct = self.percent(g)
-            self.msg = tr("Zapisano {} ({} klocków, {} kratek), zapełnienie {}%", os.path.basename(path), n, len(g), pct)
+            self.msg = tr("Saved {} ({} blocks, {} cells), fullness {}%", os.path.basename(path), n, len(g), pct)
             problems = []
             if pct > 100:
-                problems.append(tr("Level jest zapełniony w {}%. Gra nie pozwoli go opublikować.", pct))
+                problems.append(tr("The level is {}% full. The game won't let you publish it.", pct))
             skipped = self.wire()[1]
             if skipped:
-                problems.append(tr("Pominięto {} kratek drutu, które nie dotykają klocka.", len(skipped)))
+                problems.append(tr("Skipped {} wire cells that touch no block.", len(skipped)))
             if problems:
-                self.alert("\n".join(problems), tr("Zapisano, ale uwaga"))
+                self.alert("\n".join(problems), tr("Saved, with a warning"))
             return True
         except (ValueError, OSError) as e:
             self.msg = ""
-            # ValueError niesie szablon, np. ("Level „{}” już istnieje...", nazwa)
-            self.alert(tr(*e.args) if isinstance(e, ValueError) else str(e), tr("Nie zapisano levelu"))
+            # ValueError carries a template, e.g. ("Level “{}” already exists...", name)
+            self.alert(tr(*e.args) if isinstance(e, ValueError) else str(e), tr("Level not saved"))
             return False
 
     def convert(self, surf, board):
-        """Obrazek na kratki dla danej planszy: (kratki, rozmiar). Do 80x80 pikseli bez powiększania (1 piksel = 1 kratka)."""
+        """Image to cells for a given board: (cells, size). Up to 80x80 pixels without enlarging (1 pixel = 1 cell)."""
         w, h = surf.get_size()
         cols, rows = L.board_size(board)
         s = min(cols / w, rows / h)
@@ -552,18 +554,18 @@ class Editor:
         return L.image_to_cells(px), (nw, nh)
 
     def normalize(self, surf):
-        """Powiększony pixel art wraca do 1 piksel = 1 kratka; inny obrazek zostaje, jaki był."""
+        """Enlarged pixel art goes back to 1 pixel = 1 cell; any other image stays as it was."""
         surf = surf.convert_alpha()
         w, h = surf.get_size()
         data = pygame.image.tobytes(surf, "RGBA")
-        if not any(data[3::4]):  # BMP ze schowka bywa z zerową alfą: traktuj jako nieprzezroczysty
+        if not any(data[3::4]):  # a clipboard BMP may have zero alpha: treat it as opaque
             surf = surf.convert()
             data = pygame.image.tobytes(surf, "RGBA")
         grid = max(w, h) > L.MAX_SIDE and L.find_grid(data, w, h)
         if not grid:
             return surf
         s, ox, oy = grid
-        ox, oy = (o - s if o >= s * 0.4 else o for o in (ox, oy))  # przycięta skrajna kratka zostaje, jeśli widać jej większość
+        ox, oy = (o - s if o >= s * 0.4 else o for o in (ox, oy))  # a cropped outer cell stays if most of it is visible
         nw, nh = round((w - ox) / s), round((h - oy) / s)
         if max(nw, nh) > L.MAX_SIDE:
             return surf
@@ -571,7 +573,7 @@ class Editor:
         return pygame.image.frombytes(bytes(v for row in px for p in row for v in p), (nw, nh), "RGBA")
 
     def pick_board(self, surf):
-        """Najmniejsza plansza, na której obrazek nie gubi szczegółów; większa tylko w limicie zapełnienia gry."""
+        """Smallest board on which the image keeps its details; a larger one only within the game's fullness limit."""
         w, h = surf.get_size()
         default = L.board(72, 37)
         if w <= 72 and h <= 37:
@@ -593,20 +595,20 @@ class Editor:
         return best[0]
 
     def load_image(self, get_surf):
-        """Zamienia obrazek na kratki (z zachowaniem proporcji), tło zostaje puste. get_surf zwraca Surface albo None."""
+        """Turns an image into cells (keeping proportions), the background stays empty. get_surf returns a Surface or None."""
         try:
             surf = get_surf()
         except (pygame.error, OSError, ValueError, struct.error) as e:
-            self.alert(tr("Nie da się wczytać obrazka: {}", e))
+            self.alert(tr("Can't load the image: {}", e))
             return
         if surf is None:
-            self.alert(tr("W schowku nie ma obrazka. Zrób zrzut (Win+Shift+S) albo przeciągnij plik na okno."))
+            self.alert(tr("No image on the clipboard. Take a screenshot (Win+Shift+S) or drop a file on the window."))
             return
         surf = self.normalize(surf)
         self.place_image(self.pick_board(surf), surf)
 
     def place_image(self, board, surf=None):
-        """Stawia obraz (albo ostatnio wklejony) na planszy danego rozmiaru."""
+        """Puts the image (or the last pasted one) on a board of the given size."""
         surf = surf or self.image
         cells, (nw, nh) = self.convert(surf, board)
         self.push_undo()
@@ -616,12 +618,12 @@ class Editor:
         self.grid = {(L.X_MIN + ox + x, L.Y_MAX - oy - y): k for (x, y), k in cells.items()}
         self.changed()
         pct = self.percent(self.level_cells())
-        self.msg = tr("Obraz: {}x{} kratek na planszy {}x{}, zapełnienie {}%", nw, nh, COLS, ROWS, pct)
+        self.msg = tr("Image: {}x{} cells on a {}x{} board, fullness {}%", nw, nh, COLS, ROWS, pct)
         if pct > 100:
-            self.alert(tr("Obraz zapełnia level w {}%, ponad limit gry. Uprość obrazek albo wybierz mniejszą planszę.", pct))
+            self.alert(tr("The image fills the level to {}%, over the game limit. Simplify the image or use a smaller board.", pct))
 
     def get_tiles(self):
-        """Klocki po złączeniu: (x0, y0, w, h, rodzaj). Drut jako odcinki."""
+        """Blocks after merging: (x0, y0, w, h, kind). Wire as runs."""
         if self.tiles is None:
             self.tiles = []
             g = self.level_cells()
@@ -633,10 +635,10 @@ class Editor:
                     self.tiles += [(x0, y0, fp[0], fp[1], kind) for x0, y0, _, fp in L.tile(cells, info["pieces"])]
             for _, run in self.wires:
                 xs, ys = [c[0] for c in run], [c[1] for c in run]
-                self.tiles.append((min(xs), min(ys), max(xs) - min(xs) + 1, max(ys) - min(ys) + 1, "drut"))
+                self.tiles.append((min(xs), min(ys), max(xs) - min(xs) + 1, max(ys) - min(ys) + 1, "wire"))
         return self.tiles
 
-    # --- rysowanie ---
+    # --- drawing ---
     def rect_px(self, x0, y0, w, h):
         x, y = cam.px(x0, y0 + h)
         r, b = cam.px(x0 + w, y0)
@@ -660,20 +662,20 @@ class Editor:
         pygame.draw.circle(self.screen, (60, 60, 60), (cx, cy), r, 1)
 
     def draw_wire(self, rz, run):
-        """Zygzak drutu przy boku kratki, którym dotyka klocka."""
+        """Zigzag of wire along the side of the cell that touches the block."""
         s = L.rot((0, -1), rz)
         for c in run:
             r = self.rect_px(*c, 1, 1)
-            if s[1]:  # leży albo wisi: drut poziomy przy dolnej/górnej krawędzi
+            if s[1]:  # lying or hanging: horizontal wire at the bottom/top edge
                 y = r.bottom - cam.z * 0.3 if s[1] < 0 else r.top + cam.z * 0.3
                 pts = [(r.left + i * cam.z / 4, y + (cam.z * 0.18 if i % 2 else -cam.z * 0.18)) for i in range(5)]
-            else:  # przy boku: drut pionowy
+            else:  # at the side: vertical wire
                 x = r.right - cam.z * 0.3 if s[0] > 0 else r.left + cam.z * 0.3
                 pts = [(x + (cam.z * 0.18 if i % 2 else -cam.z * 0.18), r.top + i * cam.z / 4) for i in range(5)]
             pygame.draw.lines(self.screen, (40, 40, 40), False, pts, 2)
 
     def board_surface(self):
-        """Plansza jako obrazek 1 piksel = 1 kratka; przy rysowaniu tylko się go powiększa, więc zoom jest płynny."""
+        """The board as an image with 1 pixel = 1 cell; drawing only scales it up, so zooming is smooth."""
         if self.surf is None:
             self.surf = pygame.Surface((COLS, ROWS))
             self.surf.fill(T["grid"])
@@ -681,14 +683,14 @@ class Editor:
             for (x, y), k in self.grid.items():
                 if in_bounds((x, y)):
                     self.surf.set_at((x - L.X_MIN, L.Y_MAX - y), COLOR[k])
-                    if k in ("drut", "kolce"):
+                    if k in ("wire", "spike"):
                         self.marks.append((x, y, k))
         return self.surf
 
     def draw_editor_view(self):
         scr, g, v = self.screen, grid_rect(), cam.view
         surf = self.board_surface()
-        (x0, y1), (x1, y0) = to_cell(*v.topleft), to_cell(*v.bottomright)  # tylko kratki, które widać
+        (x0, y1), (x1, y0) = to_cell(*v.topleft), to_cell(*v.bottomright)  # only visible cells
         x0, x1, y0, y1 = max(x0, L.X_MIN), min(x1, L.X_MAX), max(y0, L.Y_MIN), min(y1, L.Y_MAX)
         if x0 <= x1 and y0 <= y1:
             r = self.rect_px(x0, y0, x1 - x0 + 1, y1 - y0 + 1)
@@ -697,11 +699,11 @@ class Editor:
             for x, y, k in self.marks:
                 if x0 <= x <= x1 and y0 <= y <= y1:
                     q = self.rect_px(x, y, 1, 1)
-                    if k == "drut":  # żeby drut odróżniał się od ciemnych klocków
+                    if k == "wire":  # so wire stands out from dark blocks
                         pygame.draw.line(scr, (230, 230, 230), (q.left + 3, q.centery), (q.right - 3, q.centery), 1)
                     else:
                         pygame.draw.circle(scr, (60, 60, 60), q.center, q.w // 3)
-        # grube linie co 5 kratek od lewej i od dołu planszy, rysowane na końcu, żeby cienkie ich nie przecinały
+        # thick lines every 5 cells from the left and bottom, drawn last so thin lines do not cross them
         a, b = max(g.left, v.left), min(g.right, v.right)
         c, d = max(g.top, v.top), min(g.bottom, v.bottom)
         lines = [(i % 5 == 0, (x, c), (x, d)) for i in range(COLS + 1) for x in (cam.px(L.X_MIN + i, 0)[0],) if v.left <= x <= v.right] + \
@@ -722,10 +724,10 @@ class Editor:
         if self.goal:
             x, y = self.goal
             self.zone(x - 2, y + 1, 4, 4, (250, 215, 0))
-            scr.fill(COLOR["meta"], self.rect_px(x, y, 1, 1))
+            scr.fill(COLOR["goal"], self.rect_px(x, y, 1, 1))
 
     def draw_game_view(self):
-        """Mniej więcej jak w grze: niebo, bez siatki, klocki złączone tak jak przy zapisie."""
+        """Roughly as in the game: sky, no grid, blocks merged as on save."""
         scr = self.screen
         g = grid_rect()
         vis = g.clip(cam.view)
@@ -736,12 +738,12 @@ class Editor:
             r = self.rect_px(x0, y0, w, h)
             if not r.colliderect(cam.view):
                 continue
-            if kind == "kolce":
+            if kind == "spike":
                 self.draw_spikeball((x0, y0))
-            elif kind != "drut":
+            elif kind != "wire":
                 scr.fill(COLOR[kind], r)
                 pygame.draw.rect(scr, darker(COLOR[kind]), r, 2)
-                if kind == "drewno":  # słoje deski
+                if kind == "wood":  # wood grain
                     for i in range(1, 3):
                         yy = r.top + r.h * i // 3
                         pygame.draw.line(scr, darker(COLOR[kind], 0.85), (r.left + 3, yy), (r.right - 4, yy), 1)
@@ -784,14 +786,14 @@ class Editor:
                 pygame.draw.line(scr, T["focus"], a, b, 4)
         if hover and not self.game_view and not (self.resize or self.panning or self.move or self.sel_from):
             r = self.rect_px(*hover, 1, 1)
-            if not self.sel and self.mode == "brush" and (self.tool in ("start", "meta") or hover not in self.reserved()):  # co stanie po kliknięciu
+            if not self.sel and self.mode == "brush" and (self.tool in ("start", "goal") or hover not in self.reserved()):  # what a click will place
                 if self.tool == "start":
                     r = self.rect_px(min(max(hover[0], L.X_MIN), L.X_MAX - 3), hover[1], 4, 1)
                 scr.fill(COLOR[self.tool], r)
             pygame.draw.rect(scr, (0, 0, 0), r.inflate(2, 2), 1)
             pygame.draw.rect(scr, (255, 255, 255), r, 1)
         pygame.draw.rect(scr, T["thick"], g.inflate(2, 2), 1)
-        if self.resize:  # rozmiar przy kursorze w trakcie przeciągania krawędzi
+        if self.resize:  # size next to the cursor while dragging an edge
             t = f"{COLS} x {ROWS}"
             r = pygame.Rect(mx + 16, my + 16, self.font.size(t)[0] + 16, 26).clamp(cam.view)
             pygame.draw.rect(scr, T["on"], r, border_radius=3)
@@ -819,31 +821,31 @@ class Editor:
             pygame.draw.line(scr, T["hair"], bar.bottomleft, bar.bottomright)
         r = pygame.Rect(MARGIN, 0, 20, 20)
         r.centery = bar.centery
-        if self.mode != "erase":  # kolor, którym się rysuje
+        if self.mode != "erase":  # the color being drawn with
             scr.fill(COLOR[self.tool], r)
             pygame.draw.rect(scr, T["border"], r, 1)
         else:
             self.icon("erase", r.center, T["text"])
         x = r.right + 8
-        parts = [(tr("Gumka") if self.mode == "erase" else label(self.tool), "text")]
+        parts = [(tr("Eraser") if self.mode == "erase" else label(self.tool), "text")]
         if self.mode != "erase":
             parts.append((tr(MODES[self.mode]), "muted"))
         parts.append((f"{COLS} x {ROWS}", "muted"))
         if hover:
-            parts.append((tr("kratka x={} y={}", *hover), "muted"))
+            parts.append((tr("cell x={} y={}", *hover), "muted"))
         if self.preview or self.game_view:
             n = len(self.get_tiles())
-            parts.append((tr("klocków po złączeniu: {}, zapełnienie {}%", n, self.pct), "muted"))
+            parts.append((tr("merged blocks: {}, fullness {}%", n, self.pct), "muted"))
         for text, color in parts:
             self.write(text, T[color], midleft=(x, bar.centery))
             x += self.font.size(text)[0] + 18
 
-    # --- kontrolki ---
+    # --- controls ---
     def hot(self, r):
         return r.collidepoint(self.mouse)
 
     def icon(self, name, center, color):
-        """Ikona 16x16, rysowana 4 razy większa i zmniejszana, żeby była gładka."""
+        """16x16 icon, drawn 4 times larger and scaled down so it is smooth."""
         key = name, color
         if key not in self.icons:
             big = pygame.Surface((64, 64), pygame.SRCALPHA)
@@ -863,12 +865,12 @@ class Editor:
         font = font or self.font
         t = font.render(text, True, color)
         r = t.get_rect(**at)
-        if not any(k.startswith("top") for k in at):  # na środku wiersza ma być środek wielkich liter, a nie całej linii z ogonkami
+        if not any(k.startswith("top") for k in at):  # the middle of the capitals goes to the middle of the row, not the whole line with descenders
             r.y += round(r.h / 2 - font.get_ascent() + font.metrics("H")[0][3] / 2)
         self.screen.blit(t, r)
 
     def button(self, key, r, text, hint="", accent=False, enabled=True):
-        """Zwykły przycisk; accent = żółty, coś czeka na tę akcję."""
+        """Plain button; accent = yellow, something waits for this action."""
         fill = T["accent"] if accent else T["hover"] if enabled and self.hot(r) else T["btn"]
         color = T["accent_text"] if accent else T["text"] if enabled else T["off"]
         pygame.draw.rect(self.screen, fill, r, border_radius=3)
@@ -882,7 +884,7 @@ class Editor:
         self.buttons[key] = r
 
     def command(self, key, r, text, hint="", enabled=True, color=None):
-        """Polecenie z ikoną, bez tła; podświetla się pod myszką."""
+        """Command with an icon, no background; highlighted under the mouse."""
         color = color or T["text"]
         if enabled and self.hot(r):
             pygame.draw.rect(self.screen, T["hover"], r.inflate(10, 0), border_radius=3)
@@ -892,7 +894,7 @@ class Editor:
         self.buttons[key] = r
 
     def toggle(self, key, r, text, hint, on):
-        """Przełącznik z ptaszkiem."""
+        """Toggle with a check mark."""
         if self.hot(r):
             pygame.draw.rect(self.screen, T["hover"], r.inflate(8, 0), border_radius=3)
         b = pygame.Rect(r.x + 1, r.centery - 8, 16, 16)
@@ -905,7 +907,7 @@ class Editor:
         self.buttons[key] = r
 
     def segments(self, rect, parts):
-        """Jeden pasek, z którego wybiera się jedną rzecz: (klucz, tekst, skrót, zaznaczone). Ze skrótem: ikona nad tekstem."""
+        """One strip to choose one thing from: (key, text, shortcut, selected). With a shortcut: icon above the text."""
         pygame.draw.rect(self.screen, T["btn"], rect, border_radius=4)
         for i, (key, text, hint, on) in enumerate(parts):
             x = rect.x + rect.w * i // len(parts)
@@ -922,7 +924,7 @@ class Editor:
             self.buttons[key] = r
 
     def field(self, key, r, text):
-        """Pole tekstowe; przy za długim tekście widać jego koniec."""
+        """Text field; when the text is too long its end is shown."""
         pygame.draw.rect(self.screen, T["field"], r, border_radius=3)
         pygame.draw.rect(self.screen, T["focus"] if self.focus == key else T["border"], r, 1, border_radius=3)
         inner, tw = r.inflate(-14, -4), self.font.size(text)[0]
@@ -935,7 +937,7 @@ class Editor:
         self.buttons[("field", key)] = r
 
     def size_field(self, k, x, y):
-        """Pole wymiaru ze strzałkami w środku."""
+        """Size field with arrows inside."""
         r = pygame.Rect(x, y, 62, 30)
         self.field(k, r, self.text[k])
         self.buttons[("field", k)] = pygame.Rect(x, y, 44, 30)
@@ -948,7 +950,7 @@ class Editor:
             self.buttons[("nudge", k, n)] = a
 
     def wrapped(self, text, color, x, y, w):
-        """Tekst zawijany do szerokości w; zwraca y pod nim."""
+        """Text wrapped to width w; returns y below it."""
         line = ""
         for wd in text.split(" "):
             if line and self.small.size(line + wd)[0] > w:
@@ -959,7 +961,7 @@ class Editor:
         return y + 18
 
     def draw_side(self):
-        """Rysuje panel i zapamiętuje przyciski; zwraca dół komunikatu (ma być nad przyciskiem ustawień)."""
+        """Draws the panel and remembers its buttons; returns the bottom of the message (it must stay above the settings button)."""
         scr, w, v = self.screen, SIDE - 2 * PAD, cam.view
         area = pygame.Rect(0, v.bottom + STATUS, scr.get_width(), BOTTOM_H) if self.bottom else pygame.Rect(v.right, 0, SIDE, v.h)
         scr.fill(T["panel"], area)
@@ -971,7 +973,7 @@ class Editor:
         self.buttons = {}
 
         def group(column):
-            """Nowa grupa: pod kreską, a w panelu pod planszą w następnej kolumnie, jeśli column."""
+            """New group: below a line, or in the next column of a panel below the board, if column."""
             nonlocal x0, y
             if self.bottom and column:
                 x0, y = x0 + SIDE + 10, top + 4
@@ -979,7 +981,7 @@ class Editor:
                 pygame.draw.line(scr, T["hair"], (x0, y + 8), (x0 + w - 1, y + 8))
                 y += 17
 
-        for i, (k, t) in enumerate((("kolory", tr("Kolory")), ("przedmioty", tr("Przedmioty")))):  # zakładki
+        for i, (k, t) in enumerate((("colors", tr("Colors")), ("items", tr("Items")))):  # tabs
             r = pygame.Rect(x0 + i * (w // 2), y, w // 2, 30)
             on = self.tab == k
             self.write(t, T["text" if on or self.hot(r) else "muted"], center=(r.centerx, r.centery - 1))
@@ -988,7 +990,7 @@ class Editor:
                 scr.fill(T["text"], (r.left, r.bottom - 2, r.w, 2))
             self.buttons[("tab", k)] = r
         y += 38
-        if self.tab == "kolory":  # wzornik: kafelki w siatce 1 px
+        if self.tab == "colors":  # swatches: tiles on a 1 px grid
             scr.fill(T["border"], (x0, y, 211, 211))
             for i, k in enumerate(COLOR_KINDS):
                 r = pygame.Rect(x0 + 1 + i % 6 * 35, y + 1 + i // 6 * 35, 34, 34)
@@ -998,7 +1000,7 @@ class Editor:
                 r = self.buttons[("tool", k)]
                 if self.hot(r) and k != self.tool:
                     pygame.draw.rect(scr, (255, 255, 255), r, 2)
-            if self.tool in COLOR_KINDS:  # biała ramka z czarną w środku, widać ją przy każdym kolorze
+            if self.tool in COLOR_KINDS:  # a white frame with a black one inside, visible on every color
                 r = self.buttons[("tool", self.tool)]
                 pygame.draw.rect(scr, (255, 255, 255), r.inflate(8, 8), 4)
                 pygame.draw.rect(scr, (0, 0, 0), r, 1)
@@ -1015,52 +1017,52 @@ class Editor:
                 self.write(label(t), T["on_text" if on else "text"], midleft=(sw.right + 10, r.centery))
                 self.write(str(i + 1), T["on_text" if on else "muted"], self.small, midright=(r.right - 10, r.centery))
                 self.buttons[("tool", t)] = r
-        y += 211 + 12  # ta sama wysokość w obu zakładkach
+        y += 211 + 12  # same height in both tabs
         if self.bottom:
             x0, y = x0 + SIDE + 10, top + 4
         self.segments(pygame.Rect(x0, y, w, 52), [(("mode", m), t, keys[m], self.mode == m) for m, t in (
-            ("brush", tr("Pędzel")), ("erase", tr("Gumka")), ("fill", tr("Wypełnij")))])
+            ("brush", tr("Brush")), ("erase", tr("Eraser")), ("fill", tr("Fill")))])
         y += 58
-        for i, (k, t, on) in enumerate((("preview", tr("Klocki"), self.preview), ("game", tr("Widok gry"), self.game_view))):
+        for i, (k, t, on) in enumerate((("preview", tr("Blocks"), self.preview), ("game", tr("Game view"), self.game_view))):
             self.toggle((k,), pygame.Rect(x0 + i * 96, y, 115 if i else 84, 28), t, keys[k], on)
         y += 28
         group(False)
-        self.write(tr("Plansza do {}x{}", L.MAX_SIDE, L.MAX_SIDE), T["muted"], self.small, topleft=(x0, y))
-        if self.image:  # dopasowanie planszy do wklejonego obrazu
+        self.write(tr("Board, up to {}x{}", L.MAX_SIDE, L.MAX_SIDE), T["muted"], self.small, topleft=(x0, y))
+        if self.image:  # fits the board to the pasted image
             self.button(("auto",), pygame.Rect(x0 + w - 64, y - 6, 64, 22), tr("Auto"))
         y += 20
         self.size_field("w", x0, y)
         self.write("x", T["muted"], center=(x0 + 70, y + 15))
         self.size_field("h", x0 + 78, y)
         waiting = self.typed_size() != [COLS, ROWS]
-        self.button(("apply",), pygame.Rect(x0 + 146, y, w - 146, 30), tr("Zastosuj"), accent=waiting, enabled=waiting)
+        self.button(("apply",), pygame.Rect(x0 + 146, y, w - 146, 30), tr("Apply"), accent=waiting, enabled=waiting)
         y += 30
         group(True)
-        for k, t, hint, enabled in (("undo", tr("Cofnij"), "Ctrl+Z", bool(self.undo)), ("redo", tr("Ponów"), "Ctrl+Y", bool(self.redo)),
-                                    ("paste", tr("Wklej obraz"), "Ctrl+V", True), ("delete", tr("Usuń zaznaczenie"), "Del", bool(self.sel)),
-                                    ("clear", tr("Wyczyść wszystko"), "", True)):
+        for k, t, hint, enabled in (("undo", tr("Undo"), "Ctrl+Z", bool(self.undo)), ("redo", tr("Redo"), "Ctrl+Y", bool(self.redo)),
+                                    ("paste", tr("Paste image"), "Ctrl+V", True), ("delete", tr("Delete selection"), "Del", bool(self.sel)),
+                                    ("clear", tr("Clear everything"), "", True)):
             self.command((k,), pygame.Rect(x0, y, w, 27), t, hint, enabled, T["danger"] if k == "clear" else None)
             y += 28
         group(True)
-        self.write(tr("Nazwa levelu"), T["muted"], self.small, topleft=(x0, y))
+        self.write(tr("Level name"), T["muted"], self.small, topleft=(x0, y))
         y += 20
         self.field("name", pygame.Rect(x0, y, w, 30), self.text["name"])
         y += 36
-        self.button(("save",), pygame.Rect(x0, y, w, 34), tr("Zapisz"), "Ctrl+S", accent=self.dirty())
+        self.button(("save",), pygame.Rect(x0, y, w, 34), tr("Save"), "Ctrl+S", accent=self.dirty())
         y += 42
         end = self.wrapped(self.msg, T["msg"], x0, y, w)
-        self.command(("settings",), pygame.Rect(x0, area.bottom - 36, w, 28), tr("Ustawienia"))
+        self.command(("settings",), pygame.Rect(x0, area.bottom - 36, w, 28), tr("Settings"))
         return end
 
     def draw_settings(self):
-        """Okno na środku: motyw, język i sterowanie. Dopóki jest otwarte, działają tylko jego przyciski."""
+        """Window in the middle: theme, language and controls. While open, only its buttons work."""
         scr, keys, w, pad = self.screen, self.keys[lang.current], 300, 20
-        mouse = [(tr("Rysuj"), tr("lewy przycisk")), (tr("Zaznacz i przesuń"), tr("prawy przycisk")), (tr("Przybliż i oddal"), tr("kółko")),
-                 (tr("Przesuń widok"), tr("wciśnięte kółko")), (tr("Zmień rozmiar planszy"), tr("krawędź siatki")),
-                 (tr("Wklej obraz z pliku"), tr("upuść na okno"))]
-        tools = [("brush", tr("Pędzel")), ("erase", tr("Gumka")), ("fill", tr("Wypełnij")), ("preview", tr("Klocki")), ("game", tr("Widok gry"))]
-        fixed = [(tr("Przedmioty"), f"1-{len(ITEMS)}"), (tr("Cofnij"), "Ctrl+Z"), (tr("Ponów"), "Ctrl+Y"), (tr("Wklej obraz"), "Ctrl+V"),
-                 (tr("Zapisz"), "Ctrl+S"), (tr("Zastosuj rozmiar"), "Enter"), (tr("Usuń zaznaczenie"), "Delete"), (tr("Odznacz"), "Esc")]
+        mouse = [(tr("Draw"), tr("left button")), (tr("Select and move"), tr("right button")), (tr("Zoom"), tr("wheel")),
+                 (tr("Pan the view"), tr("hold the wheel")), (tr("Resize the board"), tr("drag a grid edge")),
+                 (tr("Paste an image file"), tr("drop it here"))]
+        tools = [("brush", tr("Brush")), ("erase", tr("Eraser")), ("fill", tr("Fill")), ("preview", tr("Blocks")), ("game", tr("Game view"))]
+        fixed = [(tr("Items"), f"1-{len(ITEMS)}"), (tr("Undo"), "Ctrl+Z"), (tr("Redo"), "Ctrl+Y"), (tr("Paste image"), "Ctrl+V"),
+                 (tr("Save"), "Ctrl+S"), (tr("Apply size"), "Enter"), (tr("Delete selection"), "Delete"), (tr("Deselect"), "Esc")]
         wide = scr.get_width() >= 2 * w + 130
         left, right, head = 112 + 22 * len(mouse), 48 + 28 * len(tools) + 22 * len(fixed), 58
         box = self.box = pygame.Rect(0, 0, (2 * w + 30 if wide else w) + 2 * pad, head + (max(left, right) if wide else left + 14 + right) + 14)
@@ -1072,7 +1074,7 @@ class Editor:
         pygame.draw.rect(scr, T["border"], box, 1, border_radius=5)
         self.buttons = {}
         x, y = box.x + pad, box.y + head
-        self.write(tr("Ustawienia"), T["text"], self.big, midleft=(x, box.y + 30))
+        self.write(tr("Settings"), T["text"], self.big, midleft=(x, box.y + 30))
         r = pygame.Rect(box.right - pad - 28, box.y + 16, 28, 28)
         if self.hot(r):
             pygame.draw.rect(scr, T["hover"], r, border_radius=3)
@@ -1085,13 +1087,13 @@ class Editor:
             pygame.draw.line(scr, T["hair"], (x, y + 22), (x + w - 1, y + 22))
             y += 28
 
-        for what, parts in ((tr("Motyw"), [(("theme", k), t, "", self.theme == k) for k, t in (("dark", tr("Ciemny")), ("light", tr("Jasny")))]),
-                            (tr("Język"), [(("lang", k), t, "", lang.current == k) for k, t in (("pl", "Polski"), ("en", "English"))])):
+        for what, parts in ((tr("Theme"), [(("theme", k), t, "", self.theme == k) for k, t in (("dark", tr("Dark")), ("light", tr("Light")))]),
+                            (tr("Language"), [(("lang", k), t, "", lang.current == k) for k, t in (("pl", "Polski"), ("en", "English"))])):
             self.write(what, T["text"], midleft=(x, y + 16))
             self.segments(pygame.Rect(x + 100, y, w - 100, 32), parts)
             y += 40
         y += 4
-        heading(tr("Mysz"))
+        heading(tr("Mouse"))
         for what, how in mouse:
             self.write(what, T["text"], self.small, topleft=(x, y))
             self.write(how, T["muted"], self.small, topright=(x + w, y))
@@ -1100,17 +1102,17 @@ class Editor:
             x, y = x + w + 30, box.y + head
         else:
             y += 14
-        heading(tr("Klawisze"))
-        self.write(tr("Kliknij klawisz, żeby go zmienić."), T["muted"], self.small, topleft=(x, y))
+        heading(tr("Keys"))
+        self.write(tr("Click a key to change it."), T["muted"], self.small, topleft=(x, y))
         y += 20
         for k, what in tools:
             self.write(what, T["text"], self.small, midleft=(x, y + 13))
             waiting = self.binding == k
             r = pygame.Rect(0, y, 116 if waiting else 30, 24)
             r.right = x + w
-            pygame.draw.rect(scr, T["border"], r.move(0, 2), border_radius=4)  # bok klawisza
+            pygame.draw.rect(scr, T["border"], r.move(0, 2), border_radius=4)  # side of the key cap
             pygame.draw.rect(scr, T["accent"] if waiting else T["hover" if self.hot(r) else "btn"], r, border_radius=4)
-            self.write(tr("naciśnij literę") if waiting else keys[k], T["accent_text" if waiting else "text"], self.small, center=r.center)
+            self.write(tr("press a letter") if waiting else keys[k], T["accent_text" if waiting else "text"], self.small, center=r.center)
             self.buttons[("bind", k)] = r
             y += 28
         for what, how in fixed:
@@ -1118,7 +1120,7 @@ class Editor:
             self.write(how, T["muted"], self.small, topright=(x + w, y + 4))
             y += 22
 
-    # --- zdarzenia ---
+    # --- events ---
     def on_side_click(self, pos):
         for key, r in self.buttons.items():
             if not r.collidepoint(pos):
@@ -1160,7 +1162,7 @@ class Editor:
             elif key[0] == "clear":
                 self.push_undo()
                 self.grid, self.start, self.goal, self.sel, self.image = {}, None, None, None, None
-                self.msg = tr("Wyczyszczono. Cofnij: Ctrl+Z")
+                self.msg = tr("Cleared. Undo: Ctrl+Z")
                 self.changed()
             return
         self.set_focus(None)
@@ -1215,12 +1217,12 @@ class Editor:
             self.sel = self.sel_from = self.move = None
         elif pygame.K_1 <= e.key < pygame.K_1 + len(ITEMS):
             self.pick_tool(ITEMS[e.key - pygame.K_1])
-            self.tab = "przedmioty"
+            self.tab = "items"
 
     def on_mouse_down(self, e):
         c = to_cell(*e.pos)
         if self.busy():
-            pass  # drugi przycisk w trakcie przeciągania
+            pass  # second button during a drag
         elif not cam.view.collidepoint(e.pos):
             if e.button == 1:
                 self.on_side_click(e.pos)
@@ -1240,7 +1242,7 @@ class Editor:
                 self.sel_from = c
                 self.select(c, c)
             elif self.sel:
-                self.sel = None  # kliknięcie obok tylko odznacza
+                self.sel = None  # a click outside only deselects
             else:
                 self.push_undo()
                 self.click_grid(c)
@@ -1248,18 +1250,18 @@ class Editor:
     def handle(self, e):
         if self.settings:
             if e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE:
-                self.settings, self.binding = bool(self.binding), None  # najpierw anuluje zmianę skrótu
+                self.settings, self.binding = bool(self.binding), None  # first cancels changing a shortcut
             elif e.type == pygame.KEYDOWN and self.binding and pygame.K_a <= e.key <= pygame.K_z:
                 self.rebind(pygame.key.name(e.key).upper())
             elif e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
-                self.settings = self.box.collidepoint(e.pos)  # klik obok zamyka
+                self.settings = self.box.collidepoint(e.pos)  # a click outside closes it
                 self.on_side_click(e.pos)
         elif e.type == pygame.MOUSEBUTTONDOWN and e.button in (1, 2, 3):
             self.on_mouse_down(e)
         elif e.type == pygame.MOUSEBUTTONUP and e.button == 2:
             self.panning = False
         elif e.type == pygame.MOUSEBUTTONUP and e.button in (1, 3) and not self.panning:
-            if self.move:  # to, co wylądowało pod startem albo metą, znika
+            if self.move:  # whatever landed under the start or the goal disappears
                 for c in self.reserved():
                     self.grid.pop(c, None)
             self.drag = self.sel_from = self.move = None
@@ -1273,7 +1275,7 @@ class Editor:
             edges, start, b0, cell, saved = self.resize
             b = L.drag_edges(b0, edges, round((e.pos[0] - start[0]) / cell), round((start[1] - e.pos[1]) / cell))
             if b != self.board:
-                if not saved:  # całe przeciąganie to jeden krok cofania
+                if not saved:  # the whole drag is one undo step
                     self.push_undo()
                     saved.append(True)
                 keep = self.resize
