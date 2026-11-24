@@ -1,6 +1,6 @@
 # UCH Level Maker
 
-A level editor for Ultimate Chicken Horse. Draw a level on a grid or paste an image, save it, and play it in the game.
+A level editor for Ultimate Chicken Horse, which can save the levels straight to UCH levelnet
 
 ## Install
 
@@ -12,8 +12,8 @@ The installer is not signed, so Windows may warn about an unknown publisher: cli
 ## What it does
 
 - 1 cell = 1 block in the game, boards up to 80x80.
-- When saving, it merges cells into as few blocks as possible (8x8, 16x6, 4x4, 1x16...), so more fits under the game's fullness limit.
-- All 36 block colors found in real levels, wooden planks, spikeballs, barbed wire, start and goal.
+- When saving, it optimises (merges cells into as few blocks as possible (8x8, 16x6, 4x4, 1x16...)), so more fits under the game's fullness limit and it looks better.
+- All 36 block colors found in real levels, wooden planks, spikeballs, barbed wire, start and goal (can add others too in the future if anyone wants).
 - Paste a picture or drop an image file: it becomes blocks, with the background removed. Pixel art is imported 1:1.
 - Game view preview, undo and redo, selecting and moving, light and dark theme, English and Polish.
 
